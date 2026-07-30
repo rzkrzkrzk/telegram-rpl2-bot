@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import random
@@ -5,30 +6,31 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Tuple, Any
-from collections import defaultdict
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
-    Message, CallbackQuery, ChatMemberUpdated, ChatMember
-)
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ======================== КОНФИГУРАЦИЯ ========================
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"
+
+# Читаем токен из переменной окружения (обязательно!)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("❌ BOT_TOKEN не задан! Укажите его в переменных окружения Railway.")
+
 ADMIN_LOGIN = "rzk1488"
 ADMIN_PASSWORD = "rzksigma"
 ADMIN_SESSION_TIMEOUT = 15  # минут
 SHOOTOUT_SAVE_CHANCE = 0.68  # 68%
 MMR_BASE = 1000
-MMR_SPREAD = 20  # разброс для расчета
+MMR_SPREAD = 20
 
 # ======================== ИНИЦИАЛИЗАЦИЯ ========================
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -37,13 +39,12 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # ======================== БАЗА ДАННЫХ ========================
+
 DB_NAME = "rpl_bot.db"
 
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
-    
-    # Пользователи
     cur.execute('''
         CREATE TABLE IF NOT EXISTS users (
             tg_id INTEGER PRIMARY KEY,
@@ -53,8 +54,6 @@ def init_db():
             registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    # Статистика Дуэли буллитов
     cur.execute('''
         CREATE TABLE IF NOT EXISTS shootout_stats (
             tg_id INTEGER PRIMARY KEY,
@@ -62,8 +61,6 @@ def init_db():
             goals INTEGER DEFAULT 0
         )
     ''')
-    
-    # Статистика Дуэли клюшек
     cur.execute('''
         CREATE TABLE IF NOT EXISTS stick_duel_stats (
             tg_id INTEGER PRIMARY KEY,
@@ -72,16 +69,12 @@ def init_db():
             wins INTEGER DEFAULT 0
         )
     ''')
-    
-    # Привязанные чаты (куда пересылать)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS target_chats (
             chat_id INTEGER PRIMARY KEY,
             name TEXT
         )
     ''')
-    
-    # Привязанные каналы (откуда пересылать)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS source_channels (
             channel_id INTEGER PRIMARY KEY,
@@ -89,8 +82,6 @@ def init_db():
             title TEXT
         )
     ''')
-    
-    # Поддержка (обращения)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS support_tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,46 +93,38 @@ def init_db():
             answered_at TIMESTAMP
         )
     ''')
-    
-    # Админ-сессии
     cur.execute('''
         CREATE TABLE IF NOT EXISTS admin_sessions (
             tg_id INTEGER PRIMARY KEY,
             login_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    # Игры Дуэль клюшек
     cur.execute('''
         CREATE TABLE IF NOT EXISTS stick_duel_matches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player1_id INTEGER,
             player2_id INTEGER,
-            state TEXT,  -- waiting, playing, finished
-            current_broker INTEGER,  -- кто сейчас выбирает бросок
-            p1_shots TEXT,  -- JSON массив бросков игрока1 (например, ["left","house"])
+            state TEXT,
+            current_broker INTEGER,
+            p1_shots TEXT,
             p2_shots TEXT,
-            p1_blocks TEXT, -- JSON массив блоков игрока1
+            p1_blocks TEXT,
             p2_blocks TEXT,
             p1_score INTEGER DEFAULT 0,
             p2_score INTEGER DEFAULT 0,
-            round INTEGER DEFAULT 0,  -- 0..5 (всего 6 раундов)
+            round INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            is_ai BOOLEAN DEFAULT 0  -- игра с ИИ
+            is_ai BOOLEAN DEFAULT 0
         )
     ''')
-    
-    # Настройки GIF (храним ссылки)
     cur.execute('''
         CREATE TABLE IF NOT EXISTS gif_settings (
             key TEXT PRIMARY KEY,
             url TEXT
         )
     ''')
-    # Добавим стандартные ключи
     cur.execute("INSERT OR IGNORE INTO gif_settings (key, url) VALUES ('goal', 'https://example.com/goal.gif')")
     cur.execute("INSERT OR IGNORE INTO gif_settings (key, url) VALUES ('save', 'https://example.com/save.gif')")
-    
     conn.commit()
     conn.close()
 
@@ -222,7 +205,6 @@ def reset_shootout(tg_id: int):
     conn.commit()
     conn.close()
 
-# Админ-сессии
 def is_admin_logged(tg_id: int) -> bool:
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -259,7 +241,6 @@ def logout_admin(tg_id: int):
     conn.commit()
     conn.close()
 
-# Чаты и каналы
 def add_target_chat(chat_id: int, name: str = ""):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -305,7 +286,6 @@ def get_source_channels() -> List[dict]:
     conn.close()
     return [{"channel_id": r[0], "username": r[1], "title": r[2]} for r in rows]
 
-# Поддержка
 def add_support_ticket(tg_id: int, message: str):
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -341,7 +321,6 @@ def answer_ticket(ticket_id: int, answer: str):
     conn.commit()
     conn.close()
 
-# Настройки GIF
 def get_gif_url(key: str) -> str:
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -359,7 +338,6 @@ def set_gif_url(key: str, url: str):
     conn.commit()
     conn.close()
 
-# Игры Дуэль клюшек
 def create_match(player1: int, player2: int = None, is_ai: bool = False) -> int:
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
@@ -414,7 +392,6 @@ def get_active_match_for_player(tg_id: int) -> Optional[dict]:
 
 # ======================== КЛАВИАТУРЫ ========================
 
-# Главное меню
 def main_menu_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="🏒 Дуэль буллитов", callback_data="shootout")
@@ -426,7 +403,6 @@ def main_menu_keyboard():
     builder.adjust(2, 1, 2, 1)
     return builder.as_markup()
 
-# Клавиатура выбора броска (для Дуэли буллитов и для хода)
 def shot_keyboard(prefix="shot"):
     builder = InlineKeyboardBuilder()
     builder.button(text="⬅️ Левая Девятка", callback_data=f"{prefix}_left")
@@ -435,7 +411,6 @@ def shot_keyboard(prefix="shot"):
     builder.adjust(2, 1)
     return builder.as_markup()
 
-# Клавиатура выбора блока (для защиты)
 def block_keyboard(prefix="block"):
     builder = InlineKeyboardBuilder()
     builder.button(text="🧤 Девятки", callback_data=f"{prefix}_corners")
@@ -443,7 +418,6 @@ def block_keyboard(prefix="block"):
     builder.adjust(2)
     return builder.as_markup()
 
-# Админ-меню
 def admin_main_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="➕ Добавить чаты", callback_data="admin_add_chat")
@@ -455,7 +429,6 @@ def admin_main_keyboard():
     builder.adjust(2)
     return builder.as_markup()
 
-# Кнопка "Назад" (для админки)
 def back_button(callback_data="admin_back"):
     builder = InlineKeyboardBuilder()
     builder.button(text="🔙 Назад", callback_data=callback_data)
@@ -480,8 +453,8 @@ class SupportStates(StatesGroup):
     waiting_message = State()
 
 class StickDuelStates(StatesGroup):
-    waiting_opponent = State()  # поиск соперника
-    playing = State()  # во время игры
+    waiting_opponent = State()
+    playing = State()
 
 # ======================== ОБРАБОТЧИКИ КОМАНД ========================
 
@@ -508,14 +481,11 @@ async def cmd_duelrpl(message: types.Message):
 async def cmd_regrpl(message: types.Message):
     tg_id = message.from_user.id
     register_user(tg_id, message.from_user.username or "", message.from_user.first_name or "")
-    # Проверяем, не в игре ли уже
     match = get_active_match_for_player(tg_id)
     if match:
         await message.answer("❌ Вы уже в активной игре или поиске.")
         return
-    # Создаем матч в состоянии ожидания
     match_id = create_match(tg_id)
-    # Показываем кнопки для поиска (они будут видны только инициатору)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Принять", callback_data=f"stick_accept_{match_id}")],
         [InlineKeyboardButton(text="🤖 Игра с ИИ", callback_data=f"stick_ai_{match_id}")],
@@ -606,8 +576,7 @@ async def cb_shootout(callback: CallbackQuery):
 async def cb_stickduel(callback: CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        "🏑 *Дуэль Клюшек*\n\n"
-        "Для начала игры используйте команду /regrpl",
+        "🏑 *Дуэль Клюшек*\n\nДля начала игры используйте команду /regrpl",
         reply_markup=main_menu_keyboard(),
         parse_mode="Markdown"
     )
@@ -656,14 +625,13 @@ async def support_message(message: types.Message, state: FSMContext):
     await message.answer("✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.")
     await state.clear()
 
-# ======================== ДУЭЛЬ БУЛЛИТОВ (ИГРА С ИИ) ========================
+# ======================== ДУЭЛЬ БУЛЛИТОВ ========================
 
 @dp.callback_query(F.data.startswith("shootout_"))
 async def shootout_shot(callback: CallbackQuery):
     await callback.answer()
     tg_id = callback.from_user.id
-    shot = callback.data.split("_")[1]  # left, right, house
-    # Шанс сейва 68%
+    shot = callback.data.split("_")[1]
     is_saved = random.random() < SHOOTOUT_SAVE_CHANCE
     if is_saved:
         update_shootout_stats(tg_id, 1, 0)
@@ -673,26 +641,18 @@ async def shootout_shot(callback: CallbackQuery):
         update_shootout_stats(tg_id, 1, 1)
         gif_url = get_gif_url("goal")
         result_text = "⚡ *ГОЛ!* 🎉"
-    # Отправляем GIF, если ссылка есть
     if gif_url:
         await callback.message.answer_animation(gif_url, caption=result_text, parse_mode="Markdown")
     else:
         await callback.message.answer(result_text, parse_mode="Markdown")
-    # Предлагаем продолжить
     await callback.message.answer(
-        "🎯 Продолжить игру: /duelrpl\n"
-        "Вернуться в меню: /start",
+        "🎯 Продолжить игру: /duelrpl\nВернуться в меню: /start",
         reply_markup=main_menu_keyboard()
     )
-    # Удаляем сообщение с выбором броска
     await callback.message.delete()
 
 # ======================== ДУЭЛЬ КЛЮШЕК ========================
 
-# Словарь для хранения соответствия match_id -> сообщение об ожидании (чтобы редактировать)
-waiting_messages: Dict[int, int] = {}  # match_id -> message_id
-
-# Обработка принятия игры
 @dp.callback_query(F.data.startswith("stick_accept_"))
 async def stick_accept(callback: CallbackQuery):
     await callback.answer()
@@ -708,28 +668,18 @@ async def stick_accept(callback: CallbackQuery):
     if match["player1_id"] == tg_id:
         await callback.message.edit_text("❌ Нельзя принять самого себя.")
         return
-    # Проверяем, не в игре ли уже принимающий
     if get_active_match_for_player(tg_id):
         await callback.message.edit_text("❌ Вы уже в другой игре.")
         return
-    # Обновляем матч: добавляем второго игрока, меняем состояние
     update_match(match_id, player2_id=tg_id, state="playing", current_broker=match["player1_id"], round=0)
-    # Удаляем сообщение с кнопками у первого игрока (отправим новое)
-    # Отправляем обоим игрокам начало игры
     p1 = match["player1_id"]
     await bot.send_message(p1, f"✅ Противник найден! Начинается матч.\nВы первый бросаете.")
     await bot.send_message(tg_id, f"✅ Вы приняли игру. Ожидайте ход соперника.")
-    # Запрашиваем бросок у игрока1
     await bot.send_message(p1, "🎯 Ваш ход! Выберите бросок:", reply_markup=shot_keyboard("stick_shot"))
-    # Сохраняем состояние игроков в FSM? Вместо этого будем использовать БД и проверку current_broker
-    # Также удалим сообщение с поиском у первого игрока (оно уже не нужно)
-    # Но мы не можем удалить сообщение, отправленное не в этом чате? Можно попробовать.
     try:
         await bot.delete_message(p1, callback.message.message_id)
     except:
         pass
-    # Удаляем сообщение у инициатора поиска (если это не он нажал кнопку)
-    # В любом случае, редактируем сообщение у нажавшего
     await callback.message.edit_text("✅ Игра начата! Ожидайте ход.")
 
 @dp.callback_query(F.data.startswith("stick_ai_"))
@@ -744,7 +694,6 @@ async def stick_ai(callback: CallbackQuery):
     if match["state"] != "waiting":
         await callback.message.edit_text("❌ Игра уже начата.")
         return
-    # Обновляем на игру с ИИ
     update_match(match_id, state="playing", current_broker=tg_id, is_ai=1, round=0)
     await callback.message.edit_text("🤖 Игра с ИИ начата! Вы бросаете первым.")
     await bot.send_message(tg_id, "🎯 Ваш ход! Выберите бросок:", reply_markup=shot_keyboard("stick_shot"))
@@ -761,7 +710,6 @@ async def stick_cancel(callback: CallbackQuery):
     if match["state"] != "waiting":
         await callback.message.edit_text("❌ Игру уже нельзя отменить.")
         return
-    # Удаляем матч из БД
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
     cur.execute("DELETE FROM stick_duel_matches WHERE id=?", (match_id,))
@@ -769,13 +717,11 @@ async def stick_cancel(callback: CallbackQuery):
     conn.close()
     await callback.message.edit_text("❌ Поиск отменен.", reply_markup=main_menu_keyboard())
 
-# Обработка броска в игре Дуэль Клюшек
 @dp.callback_query(F.data.startswith("stick_shot_"))
 async def stick_shot(callback: CallbackQuery):
     await callback.answer()
     tg_id = callback.from_user.id
-    shot = callback.data.split("_")[2]  # left, right, house
-    # Находим активный матч для этого игрока
+    shot = callback.data.split("_")[2]
     match = get_active_match_for_player(tg_id)
     if not match:
         await callback.message.edit_text("❌ Вы не в игре.")
@@ -783,23 +729,18 @@ async def stick_shot(callback: CallbackQuery):
     if match["state"] != "playing":
         await callback.message.edit_text("❌ Игра уже завершена.")
         return
-    # Проверяем, чей сейчас ход
     if match["current_broker"] != tg_id:
         await callback.message.edit_text("❌ Сейчас не ваш ход.")
         return
-    # Определяем, кто бросает, кто защищается
     p1 = match["player1_id"]
     p2 = match["player2_id"]
     is_ai = match["is_ai"]
-    # Определяем, кто атакует (тот, чей ход)
     attacker = tg_id
     defender = p2 if tg_id == p1 else p1
-    # Проверяем, не закончились ли раунды (6 раундов = 3 броска каждого)
     current_round = match["round"]
     if current_round >= 6:
         await callback.message.edit_text("❌ Игра уже завершена.")
         return
-    # Сохраняем бросок атакующего
     p1_shots = json.loads(match["p1_shots"])
     p2_shots = json.loads(match["p2_shots"])
     if tg_id == p1:
@@ -808,28 +749,23 @@ async def stick_shot(callback: CallbackQuery):
     else:
         p2_shots.append(shot)
         update_match(match["id"], p2_shots=json.dumps(p2_shots))
-    # Теперь просим защитника выбрать блок (если защитник не ИИ)
     if is_ai and defender == 0:
-        # ИИ защитник: выбирает случайно между corners и house
         block = random.choice(["corners", "house"])
         await process_block(match["id"], defender, block, attacker, callback)
         return
     else:
-        # Отправляем защитнику запрос на блок
         await bot.send_message(defender, f"🛡️ Противник сделал бросок! Выберите защиту:",
                                reply_markup=block_keyboard(f"stick_block_{match['id']}"))
         await callback.message.edit_text("✅ Ваш бросок записан. Ожидайте решение защитника.")
-        # Обновляем current_broker на защитника (чтобы он мог ответить)
         update_match(match["id"], current_broker=defender)
 
-# Обработка блока
 @dp.callback_query(F.data.startswith("stick_block_"))
 async def stick_block(callback: CallbackQuery):
     await callback.answer()
     tg_id = callback.from_user.id
     parts = callback.data.split("_")
     match_id = int(parts[2])
-    block = parts[3]  # corners или house
+    block = parts[3]
     match = get_match(match_id)
     if not match:
         await callback.message.edit_text("❌ Игра не найдена.")
@@ -840,24 +776,20 @@ async def stick_block(callback: CallbackQuery):
     if match["current_broker"] != tg_id:
         await callback.message.edit_text("❌ Сейчас не ваш ход.")
         return
-    # Определяем атакующего (тот, кто не защитник)
     p1 = match["player1_id"]
     p2 = match["player2_id"]
     defender = tg_id
     attacker = p2 if tg_id == p1 else p1
-    # Передаем в обработку
     await process_block(match_id, defender, block, attacker, callback)
 
 async def process_block(match_id: int, defender_id: int, block: str, attacker_id: int, callback: CallbackQuery = None):
     match = get_match(match_id)
     if not match:
         return
-    # Загружаем броски атакующего (последний)
     p1_shots = json.loads(match["p1_shots"])
     p2_shots = json.loads(match["p2_shots"])
     if attacker_id == match["player1_id"]:
         shot = p1_shots[-1] if p1_shots else None
-        # Сохраняем блок защитника
         p2_blocks = json.loads(match["p2_blocks"])
         p2_blocks.append(block)
         update_match(match_id, p2_blocks=json.dumps(p2_blocks))
@@ -868,15 +800,11 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
         update_match(match_id, p1_blocks=json.dumps(p1_blocks))
     if not shot:
         return
-    # Определяем гол или сейв
-    # Если блок совпадает с броском: если shot == "left" или "right", а block == "corners" -> сейв
-    # Если shot == "house" и block == "house" -> сейв
     is_saved = False
     if shot in ["left", "right"] and block == "corners":
         is_saved = True
     elif shot == "house" and block == "house":
         is_saved = True
-    # Обновляем счет
     p1_score = match["p1_score"]
     p2_score = match["p2_score"]
     if not is_saved:
@@ -884,33 +812,23 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
             p1_score += 1
         else:
             p2_score += 1
-    # Увеличиваем round
     new_round = match["round"] + 1
-    # Проверяем, завершена ли игра (6 раундов)
     finished = new_round >= 6
     if finished:
-        # Определяем победителя
         winner = None
         if p1_score > p2_score:
             winner = match["player1_id"]
         elif p2_score > p1_score:
             winner = match["player2_id"]
-        # Обновляем MMR
         if winner:
-            # Расчет MMR: разброс 20
             p1_mmr, _, _ = get_stick_duel_stats(match["player1_id"])
             p2_mmr, _, _ = get_stick_duel_stats(match["player2_id"]) if match["player2_id"] else (1000,0,0)
-            # Для простоты: победитель получает +15, проигравший -15, с учетом разброса
             delta = 15
-            # Дополнительно: корректировка в зависимости от разницы MMR
-            # Если победитель имеет больший MMR, то он получает меньше, проигравший теряет меньше
             if winner == match["player1_id"]:
                 diff = p1_mmr - p2_mmr
             else:
                 diff = p2_mmr - p1_mmr
-            # Чем больше diff, тем меньше очков получает победитель, но минимум 10
             delta = max(10, 15 - diff // 20)
-            # Проигравший теряет столько же
             if winner == match["player1_id"]:
                 update_stick_duel_stats(match["player1_id"], delta, 1, 1)
                 if match["player2_id"]:
@@ -920,13 +838,10 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
                 if match["player1_id"]:
                     update_stick_duel_stats(match["player1_id"], -delta, 1, 0)
         else:
-            # Ничья - оба получают по 0 очков, но игры засчитываются
             update_stick_duel_stats(match["player1_id"], 0, 1, 0)
             if match["player2_id"]:
                 update_stick_duel_stats(match["player2_id"], 0, 1, 0)
-        # Завершаем матч
         update_match(match_id, state="finished", p1_score=p1_score, p2_score=p2_score, round=new_round)
-        # Отправляем результат
         result_text = f"🏁 *Матч завершен!*\n\n"
         result_text += f"Игрок1: {p1_score} голов\n"
         if match["player2_id"]:
@@ -937,21 +852,16 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
             result_text += f"🏆 Победитель: {winner}"
         else:
             result_text += "🤝 Ничья!"
-        # Отправляем обоим игрокам
         await bot.send_message(match["player1_id"], result_text, parse_mode="Markdown")
         if match["player2_id"]:
             await bot.send_message(match["player2_id"], result_text, parse_mode="Markdown")
-        # Если callback был от кнопки, редактируем её
         if callback:
             await callback.message.edit_text("✅ Матч завершен.")
         return
     else:
-        # Обновляем матч с новыми данными
         update_match(match_id, p1_score=p1_score, p2_score=p2_score, round=new_round,
-                     current_broker=attacker_id)  # следующий ход атакующего (меняются ролями)
-        # Уведомляем защитника, что его блок засчитан
+                     current_broker=attacker_id)
         await bot.send_message(defender_id, f"✅ Ваш блок засчитан.")
-        # Запрашиваем бросок у атакующего (он теперь следующий)
         await bot.send_message(attacker_id, "🎯 Теперь ваш ход! Выберите бросок:", reply_markup=shot_keyboard("stick_shot"))
         if callback:
             await callback.message.edit_text("✅ Ваш блок засчитан. Ожидайте ход соперника.")
@@ -988,7 +898,6 @@ async def admin_logout(callback: CallbackQuery):
     logout_admin(tg_id)
     await callback.message.edit_text("🚪 Вы вышли из админки. Для входа используйте /adminkarpl")
 
-# Добавление чата
 @dp.callback_query(F.data == "admin_add_chat")
 async def admin_add_chat(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1013,7 +922,6 @@ async def admin_add_chat_process(message: types.Message, state: FSMContext):
         return
     await state.clear()
 
-# Добавление канала
 @dp.callback_query(F.data == "admin_add_channel")
 async def admin_add_channel(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1033,7 +941,6 @@ async def admin_add_channel_process(message: types.Message, state: FSMContext):
     if not username.startswith("@"):
         username = "@" + username
     try:
-        # Получаем информацию о канале
         chat = await bot.get_chat(username)
         if chat.type != "channel":
             await message.answer("❌ Это не канал.")
@@ -1044,7 +951,6 @@ async def admin_add_channel_process(message: types.Message, state: FSMContext):
         await message.answer(f"❌ Ошибка: {e}")
     await state.clear()
 
-# Настройки (просмотр)
 @dp.callback_query(F.data == "admin_settings")
 async def admin_settings(callback: CallbackQuery):
     await callback.answer()
@@ -1066,7 +972,6 @@ async def admin_settings(callback: CallbackQuery):
             text += f"• {c['username']} ({c['title'] or 'без названия'})\n"
     else:
         text += "• нет\n"
-    # Добавим кнопки для удаления
     builder = InlineKeyboardBuilder()
     for c in chats:
         builder.button(text=f"❌ Удалить чат {c['chat_id']}", callback_data=f"admin_remove_chat_{c['chat_id']}")
@@ -1090,7 +995,6 @@ async def admin_remove_channel(callback: CallbackQuery):
     remove_source_channel(channel_id)
     await callback.message.edit_text(f"✅ Канал удален.", reply_markup=admin_main_keyboard())
 
-# Настройки игры
 @dp.callback_query(F.data == "admin_game_settings")
 async def admin_game_settings(callback: CallbackQuery):
     await callback.answer()
@@ -1136,7 +1040,6 @@ async def admin_reset_process(message: types.Message, state: FSMContext):
     reset_type = data.get("reset_type")
     target = message.text.strip()
     if target.lower() == "все":
-        # Обнуляем всех
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
         if reset_type == "mmr":
@@ -1159,7 +1062,6 @@ async def admin_reset_process(message: types.Message, state: FSMContext):
             return
     await state.clear()
 
-# Настройка GIF
 @dp.callback_query(F.data == "admin_gif_goal")
 async def admin_gif_goal(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1208,9 +1110,8 @@ async def admin_gif_save_process(message: types.Message, state: FSMContext):
         await message.answer("✅ GIF для сейва обновлен.", reply_markup=admin_main_keyboard())
     await state.clear()
 
-# Поддержка в админке
 @dp.callback_query(F.data == "admin_support")
-async def admin_support(callback: CallbackQuery):
+async def admin_support(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
     if not is_admin_logged(callback.from_user.id):
         await callback.message.edit_text("❌ Сессия истекла.")
@@ -1219,7 +1120,6 @@ async def admin_support(callback: CallbackQuery):
     if not tickets:
         await callback.message.edit_text("📭 Нет новых обращений.", reply_markup=admin_main_keyboard())
         return
-    # Показываем первое
     ticket = tickets[0]
     text = f"📩 *Обращение #{ticket['id']}*\n"
     text += f"От: {ticket['tg_id']}\n"
@@ -1255,7 +1155,6 @@ async def admin_answer_process(message: types.Message, state: FSMContext):
         return
     answer = message.text.strip()
     answer_ticket(ticket_id, answer)
-    # Отправляем ответ пользователю
     ticket = get_ticket(ticket_id)
     if ticket:
         try:
@@ -1266,11 +1165,10 @@ async def admin_answer_process(message: types.Message, state: FSMContext):
     await state.clear()
 
 @dp.callback_query(F.data == "admin_support_skip")
-async def admin_support_skip(callback: CallbackQuery):
+async def admin_support_skip(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
-    await admin_support(callback)  # перезагружаем список
+    await admin_support(callback, state)
 
-# Кнопка "Назад" в админке
 @dp.callback_query(F.data == "admin_back")
 async def admin_back(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -1281,13 +1179,11 @@ async def admin_back(callback: CallbackQuery, state: FSMContext):
 
 @dp.channel_post()
 async def channel_post_handler(message: types.Message):
-    # Проверяем, есть ли хештеги
     if not message.text:
         return
     text = message.text
     required_hashtags = ["#rplpuck", "#MatchDay", "#Result"]
     if all(ht in text for ht in required_hashtags):
-        # Получаем привязанные чаты
         chats = get_target_chats()
         for chat in chats:
             try:
@@ -1298,6 +1194,7 @@ async def channel_post_handler(message: types.Message):
 # ======================== ЗАПУСК ========================
 
 async def main():
+    logger.info("🚀 Запуск бота...")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
