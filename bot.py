@@ -17,15 +17,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # ======================== КОНФИГУРАЦИЯ ========================
 
-# Читаем токен из переменной окружения (обязательно!)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не задан! Укажите его в переменных окружения Railway.")
 
 ADMIN_LOGIN = "rzk1488"
 ADMIN_PASSWORD = "rzksigma"
-ADMIN_SESSION_TIMEOUT = 15  # минут
-SHOOTOUT_SAVE_CHANCE = 0.68  # 68%
+ADMIN_SESSION_TIMEOUT = 15
+SHOOTOUT_SAVE_CHANCE = 0.68
 MMR_BASE = 1000
 MMR_SPREAD = 20
 
@@ -651,7 +650,7 @@ async def shootout_shot(callback: CallbackQuery):
     )
     await callback.message.delete()
 
-# ======================== ДУЭЛЬ КЛЮШЕК ========================
+# ======================== ДУЭЛЬ КЛЮШЕК (ИСПРАВЛЕННАЯ ЛОГИКА) ========================
 
 @dp.callback_query(F.data.startswith("stick_accept_"))
 async def stick_accept(callback: CallbackQuery):
@@ -782,29 +781,40 @@ async def stick_block(callback: CallbackQuery):
     attacker = p2 if tg_id == p1 else p1
     await process_block(match_id, defender, block, attacker, callback)
 
+# ======================== ОСНОВНАЯ ЛОГИКА ОБРАБОТКИ РАУНДА (ИСПРАВЛЕНА) ========================
+
 async def process_block(match_id: int, defender_id: int, block: str, attacker_id: int, callback: CallbackQuery = None):
     match = get_match(match_id)
     if not match:
         return
+    
+    # Загружаем данные
     p1_shots = json.loads(match["p1_shots"])
     p2_shots = json.loads(match["p2_shots"])
+    p1_blocks = json.loads(match["p1_blocks"])
+    p2_blocks = json.loads(match["p2_blocks"])
+    
+    # Определяем бросок атакующего (последний)
     if attacker_id == match["player1_id"]:
         shot = p1_shots[-1] if p1_shots else None
-        p2_blocks = json.loads(match["p2_blocks"])
         p2_blocks.append(block)
         update_match(match_id, p2_blocks=json.dumps(p2_blocks))
     else:
         shot = p2_shots[-1] if p2_shots else None
-        p1_blocks = json.loads(match["p1_blocks"])
         p1_blocks.append(block)
         update_match(match_id, p1_blocks=json.dumps(p1_blocks))
+    
     if not shot:
         return
+    
+    # Проверяем сейв
     is_saved = False
     if shot in ["left", "right"] and block == "corners":
         is_saved = True
     elif shot == "house" and block == "house":
         is_saved = True
+    
+    # Обновляем счёт
     p1_score = match["p1_score"]
     p2_score = match["p2_score"]
     if not is_saved:
@@ -812,17 +822,21 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
             p1_score += 1
         else:
             p2_score += 1
+    
     new_round = match["round"] + 1
     finished = new_round >= 6
+    
     if finished:
+        # Завершаем матч
         winner = None
         if p1_score > p2_score:
             winner = match["player1_id"]
         elif p2_score > p1_score:
             winner = match["player2_id"]
+        
         if winner:
             p1_mmr, _, _ = get_stick_duel_stats(match["player1_id"])
-            p2_mmr, _, _ = get_stick_duel_stats(match["player2_id"]) if match["player2_id"] else (1000,0,0)
+            p2_mmr, _, _ = get_stick_duel_stats(match["player2_id"]) if match["player2_id"] else (1000, 0, 0)
             delta = 15
             if winner == match["player1_id"]:
                 diff = p1_mmr - p2_mmr
@@ -841,6 +855,7 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
             update_stick_duel_stats(match["player1_id"], 0, 1, 0)
             if match["player2_id"]:
                 update_stick_duel_stats(match["player2_id"], 0, 1, 0)
+        
         update_match(match_id, state="finished", p1_score=p1_score, p2_score=p2_score, round=new_round)
         result_text = f"🏁 *Матч завершен!*\n\n"
         result_text += f"Игрок1: {p1_score} голов\n"
@@ -852,21 +867,37 @@ async def process_block(match_id: int, defender_id: int, block: str, attacker_id
             result_text += f"🏆 Победитель: {winner}"
         else:
             result_text += "🤝 Ничья!"
+        
         await bot.send_message(match["player1_id"], result_text, parse_mode="Markdown")
         if match["player2_id"]:
             await bot.send_message(match["player2_id"], result_text, parse_mode="Markdown")
         if callback:
             await callback.message.edit_text("✅ Матч завершен.")
         return
+    
+    # Если игра не завершена, определяем следующего атакующего
+    if match["is_ai"]:
+        # ИИ всегда защищается, игрок всегда атакует
+        next_broker = attacker_id
     else:
-        update_match(match_id, p1_score=p1_score, p2_score=p2_score, round=new_round,
-                     current_broker=attacker_id)
+        # В PvP меняем роли: следующий атакующий — тот, кто был защитником
+        next_broker = defender_id  # defender_id точно не 0 для PvP
+    
+    # Обновляем матч
+    update_match(match_id, p1_score=p1_score, p2_score=p2_score, round=new_round,
+                 current_broker=next_broker)
+    
+    # Отправляем уведомление защитнику (если это не ИИ)
+    if defender_id != 0:
         await bot.send_message(defender_id, f"✅ Ваш блок засчитан.")
-        await bot.send_message(attacker_id, "🎯 Теперь ваш ход! Выберите бросок:", reply_markup=shot_keyboard("stick_shot"))
-        if callback:
-            await callback.message.edit_text("✅ Ваш блок засчитан. Ожидайте ход соперника.")
+    
+    # Запрашиваем бросок у нового атакующего
+    await bot.send_message(next_broker, "🎯 Теперь ваш ход! Выберите бросок:", reply_markup=shot_keyboard("stick_shot"))
+    
+    if callback:
+        await callback.message.edit_text("✅ Ваш блок засчитан. Ожидайте ход соперника.")
 
-# ======================== АДМИНКА ========================
+# ======================== АДМИНКА (БЕЗ ИЗМЕНЕНИЙ) ========================
 
 @dp.message(Command("adminkarpl"))
 async def cmd_adminkarpl(message: types.Message):
